@@ -1,0 +1,309 @@
+# spring security
+Spring security 是基于Spring项目的安全架构，充分利用了依赖注入和AOP来实现安全功能
+安全架构有两个重要的概念：认证（Authentication）和授权（Authorization）。
+	认证即确认用户可以访问当前系统
+	授权即确定用户在当前系统下拥有的权限
+
+Spring Security 为我们提供了多个过滤器来实现所有的安全功能，我们只需要注册一个特殊的 DelegatingFilterProxy 过滤器到WebApplicationInitializer即可。
+
+基于配置：
+	SpringSecurity配置和SpringMVC的配置类似，只要配置一个注解@EnableWebSecurity到配置类上，并且让这个类继承 WebSecurityConfigurerAdapter，然后我们可以重写configure()方法来实现相关的配置；
+	
+	例如：
+	@Configurable
+	@EnableWebSecurity
+	@EnableGlobalMethodSecurity(prePostEnabled = true)//允许进入页面方法前检验
+	public class WebSecurityConfig extends WebSecurityConfigurerAdapter {
+
+		@Override
+		protected void configure(HttpSecurity http) throws Exception {
+			super.configure(http);
+		}
+		
+		@Override
+		public void configAuthentication(AuthenticationManagerBuilder auth) throws Exception{
+			super.configure(auth);
+		}
+
+		@Override
+		public void configure(WebSecurity web) throws Exception {
+			super.configure(web)
+		}
+	}
+	
+	
+用户认证：
+	认证需要用户数据的来源，而授权则是正对用户添加相应的权限。
+	1. 内存中的用户
+		可以直接添加内存用户，并且指定相应的角色：
+		@Override
+		public void configAuthentication(AuthenticationManagerBuilder auth) throws Exception{
+			auth.imMemoryAuthtication()
+				.withUser("admin").password("admin").roles("test-admin")
+				.and()
+				.withUser("user").password("user").roles("test-user");
+		}
+		
+	2.JDBC用户
+		@Autowired
+		DataSource datasource;
+		@Override
+		protected void configure(AuthenticationManagerBuilder auth) throws Exception{
+			auth.jdbcAuthentication().datasource(datasource)
+			.usersByUsernameQuery("select username,password,true from user_tb where username = ?");
+		}
+	
+	3. 通用的用户（比较常用的，自定义实现UserDetailsService接口）
+		public class MyUserDetailsService implements UserDetailsService {
+			@Autowired
+			private ManageUserMapper manageUserMapper;
+			@Autowired
+			private ManageRoleMapper manageRoleMapper;
+
+			@Override
+			public UserDetails loadUserByUsername(String userName) throws UsernameNotFoundException {
+				ManageUser user;
+				try {
+					user = manageUserMapper.selectByUserName(userName);
+				} catch (Exception e) {
+					throw new UsernameNotFoundException("user select fail");
+				}
+				if(user == null){
+					throw new UsernameNotFoundException("no user found");
+				} else {
+					try {
+						List<ManageRole> roles = manageRoleMapper.findRolesByUserId(user.getId());
+						return new MyUserDetails(user, roles);
+					} catch (Exception e) {
+						throw new UsernameNotFoundException("user role select fail");
+					}
+				}
+			}
+		}
+	
+	说明：ManageUser是系统的对象，MyUserDetials集成了UserDetails，来自 org.springframework.security.core.userdetails.UserDetails。
+		public class MyUserDetails extends ManageUser implements UserDetails { …… }
+	同时还需要在config配置类，注册MyUserDetailService：
+		public class MyUserDetailsService implements UserDetailsService {
+			@Autowired
+			private ManageUserMapper manageUserMapper;
+			@Autowired
+			private ManageRoleMapper manageRoleMapper;
+
+			@Override
+			public UserDetails loadUserByUsername(String userName) throws UsernameNotFoundException {
+				ManageUser user;
+				try {
+					user = manageUserMapper.selectByUserName(userName);
+				} catch (Exception e) {
+					throw new UsernameNotFoundException("user select fail");
+				}
+				if(user == null){
+					throw new UsernameNotFoundException("no user found");
+				} else {
+					try {
+						List<ManageRole> roles = manageRoleMapper.findRolesByUserId(user.getId());
+						return new MyUserDetails(user, roles);
+					} catch (Exception e) {
+						throw new UsernameNotFoundException("user role select fail");
+					}
+				}
+			}
+		}
+
+		
+请求授权：
+	Spring Security通过重写 
+		protected void configure(HttpSecurity http)
+	来实现请求拦截：
+		方法						用途
+		access（String）  			SpringEL表达式结果为true是可以访问
+		anonymous（）				匿名可访问
+		denyAll（）					用户不能访问
+		fullyAuthenticated（）		用户完全认证可访问（非remember me自动下线）
+		hasAnyAuthority（String…）	如果用户有参数，则取其中任一权限可访问
+		hasAnyRole(String…)			如果用户有参数，则取其中任一角色可访问
+		hasAuthority（String）		如果用户有参数，则其权限可访问
+		hasIpAddress（String）		如果用户用来自参数的ip，则可以访问
+		hasRole（String）			如果有参数中的角色可以访问
+		permitAll（）				用户任意访问
+		rememberMe（）				允许通过remember-me登陆的用户访问
+		authenticated（）			用户登陆后可访问
+	例如：
+		@Override
+		protected void configure(HttpSecurity http) throws Exception {
+			// 设置拦截规则
+			// 自定义accessDecisionManager访问控制器,并开启表达式语言
+			http.authorizeRequests()								//通过authorizeRequests方法来开始请求权限配置
+				.anyRequest().authenticated()						//请求需要认证后（登陆后）才能访问
+				.and()
+				.formLogin().loginPage("/login").permitAll()		//登陆页面都可以访问
+				.and()
+				.logout().permitAll()								//登出页面都可以访问
+				.and()
+				.csrf().disable();									
+
+			http.addFilterBefore(new ManagementEndpointAuthenticationFilter(backendAdminUsername,backendAdminPassword), BasicAuthenticationFilter.class);
+		}
+	
+	 
+	可以设置某些静态资源都可以访问：
+	@Override
+	public void configure(WebSecurity web) throws Exception {
+		// 设置不拦截规则
+		web.ignoring().antMatchers("/assets/**", "/**/*.js", "/**/*.png", "/**/*.jpg", "/upload/**" );
+	}
+	
+	例子：
+	第1步：准备用户信息，数据源获取的 用户-权限 信息，然后自定义为 UserDetailService
+		public class MyUserDetailsService implements UserDetailsService {
+
+			@Autowired
+			private ManageUserMapper manageUserMapper;
+			@Autowired
+			private ManageRoleMapper manageRoleMapper;
+
+			@Override
+			public UserDetails loadUserByUsername(String userName) throws UsernameNotFoundException {
+				ManageUser user;
+				try {
+					user = manageUserMapper.selectByUserName(userName);
+				} catch (Exception e) {
+					throw new UsernameNotFoundException("user select fail");
+				}
+				if(user == null){
+					throw new UsernameNotFoundException("no user found");
+				} else {
+					try {
+						List<ManageRole> roles = manageRoleMapper.findRolesByUserId(user.getId());
+						return new MyUserDetails(user, roles);
+					} catch (Exception e) {
+						throw new UsernameNotFoundException("user role select fail");
+					}
+				}
+			}
+		}
+		
+		public class MyUserDetails extends ManageUser implements UserDetails {
+
+			private List<ManageRole> roles;
+
+			public MyUserDetails(ManageUser user, List<ManageRole> roles){
+				super(user);
+				this.roles = roles;
+			}
+
+			@Override
+			public Collection<? extends GrantedAuthority> getAuthorities() {
+				if(roles == null || roles.size() <1){
+					return AuthorityUtils.commaSeparatedStringToAuthorityList("");
+				}
+				StringBuilder commaBuilder = new StringBuilder();
+				for(ManageRole role : roles){
+					commaBuilder.append(role.getRoleName()).append(",");
+				}
+				String authorities = commaBuilder.substring(0,commaBuilder.length()-1);
+				return AuthorityUtils.commaSeparatedStringToAuthorityList(authorities);
+			}
+			
+			//getter setter省略
+		}
+
+		
+	第2步：定义config配置类
+		@Configurable
+		@EnableWebSecurity
+		@EnableGlobalMethodSecurity(prePostEnabled = true)
+		public class WebSecurityConfig extends WebSecurityConfigurerAdapter {
+
+			@Autowired
+			private MyAuthenticationProvider provider;	//自定义验证
+
+			@Value("${backend.admin.username}")
+			private String backendAdminUsername;
+
+			@Value("${backend.admin.password}")
+			private String backendAdminPassword;
+
+			@Autowired
+			public void configAuthentication(AuthenticationManagerBuilder auth) throws Exception{
+			}
+
+
+			@Override
+			public void configure(WebSecurity web) throws Exception {
+				// 设置不拦截规则
+				web.ignoring().antMatchers("/assets/**", "/**/*.js", "/**/*.png", "/**/*.jpg", "/upload/**",
+						"/report/stats", "/report/productStats", "/report/realProductStats");
+			}
+
+			@Override
+			protected void configure(HttpSecurity http) throws Exception {
+				// 设置拦截规则
+				// 自定义accessDecisionManager访问控制器,并开启表达式语言
+				http.authorizeRequests()
+					.anyRequest()//all others request authentication
+					.authenticated()
+					.and()
+					.formLogin().loginPage("/login").permitAll()
+					.and()
+					.logout().permitAll()
+					.and()
+					.csrf().disable();
+
+				http.addFilterBefore(new ManagementEndpointAuthenticationFilter(backendAdminUsername,backendAdminPassword), BasicAuthenticationFilter.class);
+			}
+
+			@Autowired
+			public void configure(AuthenticationManagerBuilder auth) throws Exception {
+				//将验证过程交给自定义验证工具
+				auth.authenticationProvider(provider);
+			}
+
+		}
+
+		@Component
+		public class MyAuthenticationProvider implements AuthenticationProvider {
+			private Logger logger = Logger.getLogger(MyAuthenticationProvider.class);
+
+			@Autowired
+			private MyUserDetailsService userService;
+
+			/**
+			 * 自定义验证方式
+			 */
+			@Override
+			public Authentication authenticate(Authentication authentication) throws AuthenticationException {
+				String username = authentication.getName();
+				String password = (String) authentication.getCredentials();
+				MyUserDetails user = (MyUserDetails) userService.loadUserByUsername(username);
+				if(user == null){
+					logger.info("User not found");
+					throw new BadCredentialsException("Username not found.");
+				}
+
+				if(!new BCryptPasswordEncoder().matches(password, user.getPassword())){
+					logger.info("Password not match, userId=" + user.getId());
+					throw new BadCredentialsException("Wrong password.");
+				}
+
+				Collection<? extends GrantedAuthority> authorities = user.getAuthorities();
+				return new UsernamePasswordAuthenticationToken(user, password, authorities);
+			}
+
+			@Override
+			public boolean supports(Class<?> authentication) {
+				return UsernamePasswordAuthenticationToken.class.isAssignableFrom(authentication);
+			}
+		}
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
